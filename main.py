@@ -47,6 +47,11 @@ def decrypt(c0: PolyRing, c1: PolyRing, s: PolyRing):
     m_prime = c0 + (c1 * s)
     return m_prime
 
+# TODO:
+# Test operations on PolyRing
+# Test if it's homomorphic
+# Test if it works with complex vectors
+
 def main():
     test_poly_ring_operations()
 
