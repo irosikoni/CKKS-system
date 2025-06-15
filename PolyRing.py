@@ -11,6 +11,9 @@ class PolyRing():
 
     def __repr__(self):
         return str(self.vec)
+    
+    def __neg__(self):
+        return PolyRing(-self.vec)
 
     def __add__(self, other):
         if isinstance(other, PolyRing):
