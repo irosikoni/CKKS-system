@@ -2,14 +2,11 @@ from PolyRing import PolyRing
 import numpy as np
 
 def test_poly_ring_operations():
-    z = np.array([1 + 1j, 2 - 1j])
-    delta = 2**10
-
+    z = np.array([1.0, 2.0, -0.5, 3.0])
+    delta = 2**40
     poly = PolyRing.from_complex_vector(z, delta)
-    print("Zakodowany wielomian:", poly)
-
-    decoded_z = poly.to_complex_vector(delta)
-    print("Odkodowany wektor:", decoded_z)
+    decoded = poly.to_complex_vector(delta)
+    print("Odkodowany:", decoded)
 
 def main():
     test_poly_ring_operations()
