@@ -103,6 +103,29 @@ class TestPolyRing(unittest.TestCase):
         z_decoded_encrypted = decrypted_poly.to_complex_vector(self.delta)
         np.testing.assert_allclose(z_decoded_encrypted, self.z, atol=1e-5)
 
+    def test_rescale_after_multiplication(self):
+        """
+        Test działania rescalingu po mnożeniu szyfrogramu przez skalar.
+        Sprawdza, czy wynik jest zgodny z oczekiwanym z dokładnością aproksymacji.
+        """
+        z = self.z
+        m = PolyRing.from_complex_vector(z, self.delta)
+        s, pk = generate_keys(self.n)
+        c0, c1 = encrypt(m, pk, self.n)
+
+        factor = 5
+        c0_scaled = c0 * factor
+        c1_scaled = c1 * factor
+
+        c0_rescaled = rescale(c0_scaled, self.delta)
+        c1_rescaled = rescale(c1_scaled, self.delta)
+
+        m_rescaled = decrypt(c0_rescaled, c1_rescaled, s)
+        z_decoded = m_rescaled.to_complex_vector(1.0)
+
+        expected = z * factor
+        np.testing.assert_allclose(z_decoded, expected, atol=1e-5)
+
 
 def small_random_poly(n, bound=1):
     coeffs = np.random.randint(-bound, bound + 1, size=n)
@@ -132,6 +155,18 @@ def encrypt(m: PolyRing, public_key, n):
 def decrypt(c0: PolyRing, c1: PolyRing, s: PolyRing):
     m_prime = c0 + (c1 * s)
     return m_prime
+
+
+def rescale(poly: PolyRing, delta: float):
+    """
+    Czyszczenie szumu (rescaling): dzieli współczynniki przez delta, 
+    zaokrągla i redukuje modulo q.
+    """
+    scaled = poly.vec.astype(np.float64) / delta
+    rounded = np.round(scaled) % PolyRing.q
+    reduced = rounded.astype(np.int64)
+    return PolyRing(reduced)
+
 
 # TODO:
 # Test operations on PolyRing - multiplication left
