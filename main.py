@@ -1,21 +1,37 @@
 from PolyRing import PolyRing
 import numpy as np
+import unittest
 
-def test_poly_ring_operations():
-    z = np.array([1 + 1j, 2 - 1j, -0.5 + 0.25j, 3 + 0j])
-    delta = 2**40
-    n = 8
+class TestPolyRing(unittest.TestCase):
+    def setUp(self):
+        self.n = 8
+        self.delta = 2**40
+        self.z = np.array([1 + 1j, 2 - 1j, -0.5 + 0.25j, 3 + 0j])
 
-    m = PolyRing.from_complex_vector(z, delta)
-    s, public_key = generate_keys(n)
+    def test_poly_ring_operations(self):
+        # est dodawania
+        p1 = PolyRing(np.array([1, 2, 3, 4, 0, 0, 0, 0]))
+        p2 = PolyRing(np.array([2, 3, 4, 5, 0, 0, 0, 0]))
+        result_add = p1 + p2
+        expected_add = PolyRing(np.array([3, 5, 7, 9, 0, 0, 0, 0]) % PolyRing.q)
+        np.testing.assert_array_equal(result_add.vec, expected_add.vec)
 
-    c0, c1 = encrypt(m, public_key, n)
+        # Test odejmowania
+        result_sub = p2 - p1
+        expected_sub = PolyRing(np.array([1, 1, 1, 1, 0, 0, 0, 0]) % PolyRing.q)
+        np.testing.assert_array_equal(result_sub.vec, expected_sub.vec)
 
-    decrypted_poly = decrypt(c0, c1, s)
-    z_decoded = decrypted_poly.to_complex_vector(delta)
+        # Test mnożenia
+        p3 = PolyRing(np.array([1, 0, 0, 0, 0, 0, 0, 0]))
+        p4 = PolyRing(np.array([2, 0, 0, 0, 0, 0, 0, 0]))
+        result_mul = p3 * p4
+        expected_mul = PolyRing(np.array([2, 0, 0, 0, 0, 0, 0, -2]) % PolyRing.q)
+        np.testing.assert_array_equal(result_mul.vec, expected_mul.vec)
 
-    print("Oryginał:", z)
-    print("Po deszyfrowaniu i dekodowaniu:", z_decoded)
+        # Test negacji
+        result_neg = -p1
+        expected_neg = PolyRing(np.array([-1, -2, -3, -4, 0, 0, 0, 0]) % PolyRing.q)
+        np.testing.assert_array_equal(result_neg.vec, expected_neg.vec)
 
 
 def small_random_poly(n, bound=1):
