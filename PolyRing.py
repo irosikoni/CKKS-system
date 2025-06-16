@@ -6,7 +6,9 @@ class PolyRing():
 
     def __init__(self, vec):
         N = len(self.f) - 1
-        vec = np.array(vec)
+        vec = np.array(vec, dtype=np.int64)
+        # dodajemy modulo q element-wise, aby uniknac overflow
+        vec = np.mod(vec, self.q)
         self.vec = (np.resize(vec, N) % self.q).astype(np.int64)
 
     def __repr__(self):
@@ -31,12 +33,13 @@ class PolyRing():
         if isinstance(other, PolyRing):
             N = len(self.f) - 1
             prod = np.polymul(self.vec, other.vec)
-            reduced_prod_coeffs = np.zeros(N, dtype=prod.dtype)
-            for i in range(N):
-                reduced_prod_coeffs[i] = prod[i]
-            for i in range(N, len(prod)):
-                exponent = i - N
-                reduced_prod_coeffs[exponent] -= prod[i]
+            reduced_prod_coeffs = np.zeros(N, dtype=np.int64)
+            for i in range(len(prod)):
+                coeff = prod[i] % self.q
+                if i < N:
+                    reduced_prod_coeffs[i] = (reduced_prod_coeffs[i] + coeff) % self.q
+                else:
+                    reduced_prod_coeffs[i - N] = (reduced_prod_coeffs[i - N] - coeff) % self.q
             return PolyRing(reduced_prod_coeffs)
         elif isinstance(other, int):
             return PolyRing(other * self.vec)

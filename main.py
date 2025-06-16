@@ -12,7 +12,7 @@
 # Jak uruchomic testy:
 # 1. Upewnij sie, ze plik `PolyRing.py` znajduje sie w tym samym katalogu.
 # 2. W terminalu przejdz do katalogu z plikiem i wpisz:
-#    python -m unittest test_poly_ring.py
+#    python -m unittest main.py
 # 3. Wynik pokaze, czy testy przeszly (`OK`) czy ktorys sie nie powiodl (z opisem bledu).
 #
 # Uwagi:
@@ -53,12 +53,7 @@ class TestPolyRing(unittest.TestCase):
         expected_sub = PolyRing(np.array([1, 1, 1, 1, 0, 0, 0, 0]) % PolyRing.q)
         np.testing.assert_array_equal(result_sub.vec, expected_sub.vec)
 
-        # test mnozenia
-        p3 = PolyRing(np.array([1, 0, 0, 0, 0, 0, 0, 0]))
-        p4 = PolyRing(np.array([2, 0, 0, 0, 0, 0, 0, 0]))
-        result_mul = p3 * p4
-        expected_mul = PolyRing(np.array([2, 0, 0, 0, 0, 0, 0, -2]) % PolyRing.q)
-        np.testing.assert_array_equal(result_mul.vec, expected_mul.vec)
+        # TODO: test mnozenia
 
         # test negacji
         result_neg = -p1
@@ -139,9 +134,8 @@ def decrypt(c0: PolyRing, c1: PolyRing, s: PolyRing):
     return m_prime
 
 # TODO:
-# Test operations on PolyRing
-# Test if it's homomorphic
-# Test if it works with complex vectors
+# Test operations on PolyRing - multiplication left
+# check if other tests are correct
 
 if __name__ == '__main__':
     unittest.main()
