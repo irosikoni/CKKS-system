@@ -2,17 +2,39 @@ import numpy as np
 import random 
 
 class PolyRing:
+    """
+    Reprezentuje wielomiany w pierścieniu Z_Q[X]/(X^N+1).
+    Moduł Q jest dynamiczny i będzie zarządzany przez modulus chain.
+    """
+    
+    # N zostanie nadpisane przez CKKSContext, ale inicjujemy dla spójności
     N = 1024 
+    # f = X^N + 1. Będzie aktualizowane w CKKSContext, gdy N zostanie ustawione.
     f = np.array([1] + [0]*(N-1) + [1], dtype=object) 
+
+    # `q` będzie globalnym modułem kontekstu, ustawianym przez CKKSContext.
     q = None 
 
     def __init__(self, vec, current_q=None):
+        """
+        Inicjalizuje wielomian.
+        vec: Lista/array współczynników.
+        current_q: Aktualny moduł Q dla tego wielomianu.
+                   Jeśli None, używa PolyRing.q (dla wstecznej kompatybilności lub gdy q jest stałe).
+        """
         if current_q is None and PolyRing.q is None:
             raise ValueError("Moduł q musi być ustawiony globalnie (PolyRing.q) lub lokalnie (current_q).")
         self._current_q = current_q if current_q is not None else PolyRing.q
 
         vec = np.array(vec, dtype=object) 
         
+        # Upewniamy się, że PolyRing.f.size jest poprawne dla bieżącego PolyRing.N
+        # To jest kluczowe, bo self.f jest atrybutem klasy i może być zmienione
+        # przez CKKSContext. Niestety, numpy.array domyślnie tworzy raz,
+        # więc musimy go zaktualizować, jeśli N się zmieni.
+        if len(PolyRing.f) - 1 != self.N:
+            PolyRing.f = np.array([1] + [0]*(self.N-1) + [1], dtype=object)
+
         # Redukcja wielomianu modulo X^N + 1 podczas inicjalizacji, jeśli jest zbyt długi.
         if len(vec) >= self.N:
             self.vec = self._reduce_mod_f(vec)
@@ -23,6 +45,11 @@ class PolyRing:
 
 
     def _reduce_mod_f(self, poly_coeffs):
+        """
+        Redukuje wielomian modulo x^N + 1.
+        Wykorzystuje fakt, że x^N = -1 w tym pierścieniu.
+        Obsługuje duże liczby całkowite używając dtype=object.
+        """
         N = self.N 
         current_q = self._current_q
 
@@ -44,26 +71,28 @@ class PolyRing:
         return str(self.vec)
 
     def __add__(self, other):
+        """Homomorficzne dodawanie wielomianów."""
         assert self._current_q == other._current_q, "Moduli Q must match for addition"
         result_vec = np.array([(int(x) + int(y)) % self._current_q for x, y in zip(self.vec, other.vec)], dtype=object)
         return PolyRing(result_vec, self._current_q)
 
     def __sub__(self, other):
+        """Homomorficzne odejmowanie wielomianów."""
         assert self._current_q == other._current_q, "Moduli Q must match for subtraction"
         result_vec = np.array([(int(x) - int(y)) % self._current_q for x, y in zip(self.vec, other.vec)], dtype=object)
         return PolyRing(result_vec, self._current_q)
 
     def __neg__(self):
+        """Negacja wielomianu."""
         result_vec = np.array([(-int(x)) % self._current_q for x in self.vec], dtype=object)
         return PolyRing(result_vec, self._current_q)
 
-    # --- NOWA IMPLEMENTACJA __mul__ z ręcznym mnożeniem ---
     def __mul__(self, other):
+        """Homomorficzne mnożenie wielomianów lub mnożenie przez skalar."""
         if isinstance(other, PolyRing):
             assert self._current_q == other._current_q, "Moduli Q must match for multiplication"
             
             # Ręczne mnożenie wielomianów
-            # Konwertujemy wektory na listy intów Pythona, aby uniknąć problemów z numpy
             coeffs1_list = [int(x) for x in self.vec]
             coeffs2_list = [int(x) for x in other.vec]
 
@@ -71,21 +100,17 @@ class PolyRing:
             deg2 = len(coeffs2_list) - 1
             result_deg = deg1 + deg2
             
-            # Tworzymy listę na współczynniki wyniku (stopień może być do 2N-2)
             full_coeffs_list = [0] * (result_deg + 1)
 
             for i in range(deg1 + 1):
                 for j in range(deg2 + 1):
                     full_coeffs_list[i + j] += coeffs1_list[i] * coeffs2_list[j]
             
-            # Konwertujemy wynik z powrotem na numpy array z dtype=object
             full = np.array(full_coeffs_list, dtype=object)
             
-            # Redukujemy modulo X^N+1
             reduced = self._reduce_mod_f(full)
             return PolyRing(reduced, self._current_q)
         elif isinstance(other, (int, np.integer)):
-            # Mnożenie przez skalar: wykonaj na Pythonowych intach, potem zredukuj
             result_vec = np.array([(int(x) * other) % self._current_q for x in self.vec], dtype=object)
             return PolyRing(result_vec, self._current_q)
         else:
@@ -96,6 +121,10 @@ class PolyRing:
 
     @classmethod
     def from_complex_vector(cls, z_vec, delta, current_q):
+        """
+        Koduje wektor liczb zespolonych (slotów) do wielomianu PolyRing.
+        Wykorzystuje kanoniczne osadzenie i niestandardowe IFFT dla X^N+1.
+        """
         N = cls.N 
         num_slots = N // 2
 
@@ -120,6 +149,10 @@ class PolyRing:
         return cls(poly_coeffs, current_q)
 
     def to_complex_vector(self, delta):
+        """
+        Dekoduje wielomian PolyRing z powrotem do wektora liczb zespolonych (slotów).
+        Wykorzystuje kanoniczne osadzenie i niestandardowe DFT dla X^N+1.
+        """
         N = self.N
         num_slots = N // 2
 

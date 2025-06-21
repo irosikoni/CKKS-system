@@ -3,18 +3,14 @@ import random
 from PolyRing import PolyRing 
 
 # --- Globalne funkcje pomocnicze (generowanie szumu) ---
-def _small_random_poly(n, bound=1, current_q=None):
-    if current_q is None: 
-        current_q = PolyRing.q # Fallback, ale powinien być zawsze podany z kontekstu
-    
-    # Generujemy listę Pythonowych intów o małych wartościach
+def _small_random_poly(n, bound=1, current_q=None): # BOUND=1 jest ok dla s
+    if current_q is None: current_q = PolyRing.q 
     coeffs = np.random.randint(-bound, bound + 1, size=n).tolist()
     return PolyRing(coeffs, current_q)
 
-def _noise_poly(n, bound=5, current_q=None):
-    if current_q is None: 
-        current_q = PolyRing.q # Fallback
-    
+# ckks.py, funkcja _noise_poly
+def _noise_poly(n, bound=1, current_q=None): # UPEWNIJ SIĘ, ŻE TO JEST bound=1 (lub testowo 0)
+    if current_q is None: current_q = PolyRing.q 
     coeffs = np.random.randint(-bound, bound + 1, size=n).tolist()
     return PolyRing(coeffs, current_q)
 
@@ -28,9 +24,11 @@ def decode(poly: PolyRing, delta: float) -> np.ndarray:
 # --- Klasa CKKSContext ---
 class CKKSContext:
     def __init__(self, N: int, q_sizes: list[int], delta_bits: int):
-        # Ustawienie N w klasie PolyRing
+        # Ustawienie N w klasie PolyRing i zaktualizowanie PolyRing.f
         PolyRing.N = N 
+        PolyRing.f = np.array([1] + [0]*(N-1) + [1], dtype=object)
         self.N = N
+
         self.q_sizes = q_sizes
         self.delta_bits = delta_bits
         self.global_delta = 2**delta_bits
@@ -40,8 +38,6 @@ class CKKSContext:
         
         current_product = 1
 
-        # Generowanie liczb pierwszych dla łańcucha modułów
-        # To są testowe wartości, w praktyce potrzebne są silne liczby pierwsze.
         _known_primes = {
             60: 2**60 - 93,
             40: 2**40 - 87, # Przykład, należy zweryfikować czy jest pierwsza.
@@ -62,14 +58,12 @@ class CKKSContext:
             current_product *= self.primes[-1]
             self.q_chain.append(current_product)
 
-        # Ustawienie aktualnego modułu (największego)
         self.current_modulus_idx = len(self.q_chain) - 1 
         self.current_q = self.q_chain[self.current_modulus_idx]
-        PolyRing.q = self.current_q # Ustawienie globalnego PolyRing.q
+        PolyRing.q = self.current_q 
 
-        # Generowanie kluczy (KeyGenerator przyjmuje kontekst)
         self.keygen = KeyGenerator(self) 
-        self.galois_keys = {} # Placeholder na klucze Galois (dla rotacji)
+        self.galois_keys = {} 
 
 # --- Klasa Ciphertext ---
 class Ciphertext:
@@ -123,18 +117,14 @@ class Ciphertext:
         
         next_mod_idx = current_mod_idx - 1
         Q_next = self.context.q_chain[next_mod_idx]
-        P_drop = self.context.primes[current_mod_idx] # Liczba pierwsza, która jest usuwana z Q_current
+        P_drop = self.context.primes[current_mod_idx] 
 
-        # Pobierz klucz relinearyzacji dla tego etapu modulus chain
-        # relin_key_for_stage to para (A_r, B_r)
         relin_key_for_stage = self.context.keygen.relin_key[current_mod_idx - 1] 
         A_r, B_r = relin_key_for_stage
 
-        # Przekształć d2 do formatu relinearyzacji i dodaj do c0/c1
         temp_c0 = self.c0 + self._d2 * B_r
         temp_c1 = self.c1 + self._d2 * A_r
 
-        # Modulus Switching: c_final = round(c_temp / P_drop) (mod Q_next)
         c0_final = Ciphertext._rescale_poly_by_factor(temp_c0, P_drop)
         c1_final = Ciphertext._rescale_poly_by_factor(temp_c1, P_drop)
 
@@ -144,30 +134,28 @@ class Ciphertext:
         new_context.q_chain = self.context.q_chain
         new_context.current_modulus_idx = next_mod_idx
         new_context.current_q = Q_next
-        PolyRing.q = new_context.current_q # Aktualizacja globalnego modułu PolyRing
+        PolyRing.q = new_context.current_q 
 
-        # Zaktualizuj deltę szyfrogramu po modulus switching.
-        # Nowa delta wiadomości = stara delta wiadomości / P_drop
         new_effective_delta_after_relinearize = self.delta / P_drop 
         
         return Ciphertext(c0_final, c1_final, new_context, new_effective_delta_after_relinearize, d2=None)
 
     @staticmethod
     def _rescale_poly_by_factor(poly: PolyRing, factor: float) -> PolyRing:
-        """
-        Pomocnicza metoda statyczna do skalowania wielomianu przez podany współczynnik.
-        Zapewnia poprawne zaokrąglanie i redukcję modulo q.
+        """ Skaluje współczynniki wielomianu przez podany współczynnik.
+        Używa float() do konwersji współczynników, aby uniknąć przepełnienia.
+        Współczynnik musi być różny od zera.
         """
         if factor == 0:
             raise ValueError("Współczynnik skalowania nie może być zerem.")
-        
-        scaled_coeffs_float = np.array([int(x) for x in poly.vec], dtype=np.float64)
-        scaled_coeffs_float = np.round(scaled_coeffs_float / factor)
-        
+
+        scaled_coeffs_float = np.array([float(x) for x in poly.vec], dtype=np.float64) # Upewnij się, że to float(x)
+        scaled_coeffs_float = np.round(scaled_coeffs_float / factor) # Wynik to float
+
         current_q = poly._current_q 
-        # Konwertujemy z powrotem na int (object) i stosujemy modulo
+        # Konwersja na inta przed modulo, aby uniknąć przepełnienia
         reduced = np.array([(int(x) % current_q + current_q) % current_q for x in scaled_coeffs_float], dtype=object)
-        
+
         return PolyRing(reduced, current_q)
 
     def rescale(self, target_delta: float):
@@ -175,7 +163,6 @@ class Ciphertext:
         Reskaluje szyfrogram do nowego, pożądanego współczynnika delta.
         To jest oddzielna operacja od modulus switching w relinearyzacji.
         """
-        # `self.delta` obiektu Ciphertext to aktualna delta zaszyfrowanej wiadomości.
         rescale_factor = self.delta / target_delta 
         
         c0_rescaled = Ciphertext._rescale_poly_by_factor(self.c0, rescale_factor)
@@ -185,7 +172,6 @@ class Ciphertext:
         if self._d2 is not None:
              d2_rescaled = Ciphertext._rescale_poly_by_factor(self._d2, rescale_factor)
 
-        # Zwracamy nowy szyfrogram z nową, docelową deltą, w tym samym kontekście (modulus)
         new_ciphertext_obj = Ciphertext(c0_rescaled, c1_rescaled, self.context, target_delta, d2=d2_rescaled)
         return new_ciphertext_obj
 
@@ -238,7 +224,8 @@ class KeyGenerator:
     def _generate_keys(self):
         N = self.context.N
         current_q = self.context.current_q
-        max_q_bits = int(np.ceil(np.log2(float(current_q)))) # float() aby uniknąć OverflowError, jeśli current_q jest bardzo duże
+        # Używamy float() do log2, aby uniknąć OverflowError dla bardzo dużego current_q
+        max_q_bits = int(np.ceil(np.log2(float(current_q)))) 
 
         s = _small_random_poly(N, bound=1, current_q=current_q)
         
@@ -263,12 +250,10 @@ class KeyGenerator:
         
         max_q_bits = int(np.ceil(np.log2(float(self.context.current_q)))) 
 
-        # Iterujemy od największego modułu (Q_L) w dół do Q_1
         for idx in range(len(self.context.q_chain) - 1, 0, -1): 
             Q_current_for_key = self.context.q_chain[idx] 
             P_drop_for_key = self.context.primes[idx] 
             
-            # Generowanie A_r (losowy wielomian mod Q_k)
             a_r_coeffs = []
             for _ in range(self.context.N):
                 rand_val = random.getrandbits(max_q_bits + 10)
@@ -296,7 +281,6 @@ class KeyGenerator:
         current_q = self.context.current_q
         max_q_bits = int(np.ceil(np.log2(float(current_q))))
 
-        # Generowanie a_ks
         a_ks_coeffs = []
         for _ in range(N):
             rand_val = random.getrandbits(max_q_bits + 10)
