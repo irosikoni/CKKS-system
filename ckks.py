@@ -1,5 +1,6 @@
 import numpy as np
 import random 
+from typing import Optional
 from PolyRing import PolyRing 
 
 # --- Globalne funkcje pomocnicze (generowanie szumu) ---
@@ -15,23 +16,59 @@ def _noise_poly(n, bound=1, current_q=None): # UPEWNIJ SIĘ, ŻE TO JEST bound=1
     return PolyRing(coeffs, current_q)
 
 # --- Kodowanie i Dekodowanie ---
-def encode(z: np.ndarray, delta: float, current_q: int) -> PolyRing:
-    return PolyRing.from_complex_vector(z, delta, current_q)
+def encode(z_vec, delta, current_q):
+    """
+    Encode a complex vector into a polynomial.
+    
+    Args:
+        z_vec: Complex vector to encode
+        delta: Scale factor
+        current_q: Current modulus
+        
+    Returns:
+        PolyRing: Encoded polynomial
+    """
+    # Scale the input vector
+    scaled_vec = z_vec * delta
+    
+    # Create polynomial
+    poly = PolyRing.from_complex_vector(scaled_vec, current_q)
+    poly._scale_factor = delta
+    return poly
 
-def decode(poly: PolyRing, delta: float) -> np.ndarray:
-    return poly.to_complex_vector(delta)
+def decode(poly, delta):
+    """
+    Decode a polynomial back to a complex vector.
+    
+    Args:
+        poly: PolyRing polynomial to decode
+        delta: Scale factor
+        
+    Returns:
+        numpy.ndarray: Decoded complex vector
+    """
+    # Get complex vector
+    result = PolyRing.to_complex_vector(poly)
+    
+    # Rescale
+    if delta > 0:
+        result = result / delta
+    
+    return result
+
 
 # --- Klasa CKKSContext ---
 class CKKSContext:
     def __init__(self, N: int, q_sizes: list[int], delta_bits: int):
-        # Ustawienie N w klasie PolyRing i zaktualizowanie PolyRing.f
-        PolyRing.N = N 
-        PolyRing.f = np.array([1] + [0]*(N-1) + [1], dtype=object)
+        # Verify N matches PolyRing.N instead of trying to assign it
+        if N != PolyRing.N:
+            raise ValueError(f"N must be {PolyRing.N}")
         self.N = N
+        PolyRing.set_polynomial_modulus(N)
 
         self.q_sizes = q_sizes
         self.delta_bits = delta_bits
-        self.global_delta = 2**delta_bits
+        self.global_delta = 2.0**delta_bits  # Changed to float for better precision
 
         self.primes = [] 
         self.q_chain = [] 
@@ -40,9 +77,9 @@ class CKKSContext:
 
         _known_primes = {
             60: 2**60 - 93,
-            40: 2**40 - 87, # Przykład, należy zweryfikować czy jest pierwsza.
-            30: 2**30 - 35, # Liczba pierwsza
-            29: 2**29 - 3   # Liczba pierwsza
+            40: 2**40 - 87,
+            30: 2**30 - 35,
+            29: 2**29 - 3
         }
 
         for bits in q_sizes:
@@ -67,150 +104,296 @@ class CKKSContext:
 
 # --- Klasa Ciphertext ---
 class Ciphertext:
-    def __init__(self, c0: PolyRing, c1: PolyRing, context: CKKSContext, initial_delta: float, d2: PolyRing = None):
-        self.c0 = c0
-        self.c1 = c1
-        self.context = context 
-        self._d2 = d2
-        self.delta = initial_delta # Dodano atrybut delta do obiektu Ciphertext
-
+    """A class representing an encrypted polynomial in the CKKS scheme."""
+    
+    def __init__(self, c0, c1, context, delta=None):
+        """Initialize a ciphertext with two polynomials."""
+        self.c0 = c0  # PolyRing
+        self.c1 = c1  # PolyRing
+        self.context = context
+        self.delta = delta if delta is not None else context.global_delta
+        self._d2 = None  # For storing the quadratic term in multiplication
+        
+    @staticmethod
+    def encrypt_static(plain, public_key, context):
+        """Encrypt a plaintext polynomial using the public key."""
+        current_q = context.current_q
+        
+        # Generate random small polynomials with the correct modulus
+        u = PolyRing.random_small(current_q)
+        e1 = PolyRing.random_small(current_q)
+        e2 = PolyRing.random_small(current_q)
+        
+        # Ensure all polynomials have the same modulus
+        if plain._current_q != current_q:
+            plain = plain.mod_switch_to(current_q)
+        if public_key.p0._current_q != current_q:
+            public_key.p0 = public_key.p0.mod_switch_to(current_q)
+        if public_key.p1._current_q != current_q:
+            public_key.p1 = public_key.p1.mod_switch_to(current_q)
+        
+        # Compute ciphertext components with modulus matching
+        c0 = (public_key.p0 * u).mod_switch_to(current_q)
+        c0 = (c0 + e1).mod_switch_to(current_q)
+        c0 = (c0 + plain).mod_switch_to(current_q)
+        
+        c1 = (public_key.p1 * u).mod_switch_to(current_q)
+        c1 = (c1 + e2).mod_switch_to(current_q)
+        
+        return Ciphertext(c0, c1, context, delta=plain._scale_factor if hasattr(plain, '_scale_factor') else None)
+    
+    def decrypt(self, secret_key):
+        """Decrypt the ciphertext using the secret key."""
+        current_q = self.context.current_q
+        
+        # Ensure all polynomials have the same modulus
+        if self.c0._current_q != current_q:
+            self.c0 = self.c0.mod_switch_to(current_q)
+        if self.c1._current_q != current_q:
+            self.c1 = self.c1.mod_switch_to(current_q)
+        if secret_key.s._current_q != current_q:
+            secret_key.s = secret_key.s.mod_switch_to(current_q)
+        
+        # Compute m + e = c0 + c1 * s with modulus matching
+        temp = (self.c1 * secret_key.s).mod_switch_to(current_q)
+        result = (self.c0 + temp).mod_switch_to(current_q)
+        result._scale_factor = self.delta
+        return result
+    
     def __add__(self, other):
-        assert self.context.current_q == other.context.current_q, "Moduli Q must match for addition"
-        return Ciphertext(self.c0 + other.c0, self.c1 + other.c1, self.context, self.delta)
-
+        """Add two ciphertexts homomorphically."""
+        if not isinstance(other, Ciphertext):
+            raise TypeError("Can only add two ciphertexts")
+            
+        current_q = self.context.current_q
+        
+        # Ensure all polynomials have the same modulus
+        c0_self = self.c0.mod_switch_to(current_q) if self.c0._current_q != current_q else self.c0
+        c1_self = self.c1.mod_switch_to(current_q) if self.c1._current_q != current_q else self.c1
+        c0_other = other.c0.mod_switch_to(current_q) if other.c0._current_q != current_q else other.c0
+        c1_other = other.c1.mod_switch_to(current_q) if other.c1._current_q != current_q else other.c1
+        
+        # Add corresponding polynomials with modulus matching
+        c0 = (c0_self + c0_other).mod_switch_to(current_q)
+        c1 = (c1_self + c1_other).mod_switch_to(current_q)
+        
+        # The scale factor should be the same for addition
+        assert abs(self.delta - other.delta) < 1e-6, "Scales must match for addition"
+        return Ciphertext(c0, c1, self.context, delta=self.delta)
+    
     def __mul__(self, other):
-        if isinstance(other, Ciphertext):
-            raise ValueError("Użyj .multiply(other) dla mnożenia szyfrogram-szyfrogram.")
-        elif isinstance(other, (int, float, np.integer, np.floating)):
-            return Ciphertext(self.c0 * other, self.c1 * other, self.context, self.delta)
-        else:
-            raise TypeError("Nieobsługiwany typ mnożenia")
-
+        """Multiply two ciphertexts homomorphically."""
+        if not isinstance(other, Ciphertext):
+            raise TypeError("Can only multiply two ciphertexts")
+            
+        current_q = self.context.current_q
+        
+        # Ensure all polynomials have the same modulus
+        c0_self = self.c0.mod_switch_to(current_q) if self.c0._current_q != current_q else self.c0
+        c1_self = self.c1.mod_switch_to(current_q) if self.c1._current_q != current_q else self.c1
+        c0_other = other.c0.mod_switch_to(current_q) if other.c0._current_q != current_q else other.c0
+        c1_other = other.c1.mod_switch_to(current_q) if other.c1._current_q != current_q else other.c1
+        
+        # Compute all cross terms with modulus matching
+        d0 = (c0_self * c0_other).mod_switch_to(current_q)
+        d1 = ((c0_self * c1_other).mod_switch_to(current_q) + 
+              (c1_self * c0_other).mod_switch_to(current_q)).mod_switch_to(current_q)
+        d2 = (c1_self * c1_other).mod_switch_to(current_q)
+        
+        # The scale factor multiplies in multiplication
+        new_delta = self.delta * other.delta
+        
+        result = Ciphertext(d0, d1, self.context, delta=new_delta)
+        result._d2 = d2  # Store for later relinearization
+        return result
+    
+    def add(self, other):
+        """Legacy method for addition, use + operator instead."""
+        return self.__add__(other)
+    
     def multiply(self, other):
-        """
-        Homomorficzne mnożenie dwóch szyfrogramów.
-        Zwraca trzykomponentowy szyfrogram, który wymaga relinearyzacji i skalowania.
-        """
-        assert self.context.current_q == other.context.current_q, "Moduli Q must match for multiplication"
-        
-        d0 = self.c0 * other.c0
-        d1 = self.c0 * other.c1 + self.c1 * other.c0
-        d2 = self.c1 * other.c1
-        
-        new_effective_delta = self.delta * other.delta # Aktualizacja delty
-        
-        return Ciphertext(d0, d1, self.context, new_effective_delta, d2=d2)
+        """Legacy method for multiplication, use * operator instead."""
+        return self.__mul__(other)
 
     def relinearize(self):
         """
-        Wykonuje relinearyzację szyfrogramu z trzech komponentów (c0,c1,d2) do dwóch (c0',c1').
-        Łączy się z operacją Modulus Switching, redukując moduł szyfrogramu.
+        Performs relinearization and adjusts scale.
+        The scale is divided by the dropped prime.
         """
         if self._d2 is None:
-            raise ValueError("Brak składnika c2 (d2) – najpierw wykonaj multiply().")
-        
-        Q_current = self.context.current_q
+            raise ValueError("No c2 (d2) component - perform multiply() first.")
+
         current_mod_idx = self.context.current_modulus_idx
-        
         if current_mod_idx == 0:
-            raise ValueError("Nie można przeprowadzić relinearyzacji: osiągnięto ostatni moduł w łańcuchu.")
-        
+            raise ValueError("Cannot perform relinearization: reached last modulus in chain.")
+
         next_mod_idx = current_mod_idx - 1
         Q_next = self.context.q_chain[next_mod_idx]
-        P_drop = self.context.primes[current_mod_idx] 
+        P_drop = self.context.primes[current_mod_idx]
 
-        relin_key_for_stage = self.context.keygen.relin_key[current_mod_idx - 1] 
-        A_r, B_r = relin_key_for_stage
-
-        temp_c0 = self.c0 + self._d2 * B_r
-        temp_c1 = self.c1 + self._d2 * A_r
-
-        c0_final = Ciphertext._rescale_poly_by_factor(temp_c0, P_drop)
-        c1_final = Ciphertext._rescale_poly_by_factor(temp_c1, P_drop)
-
-        # Stwórz nowy kontekst dla wynikowego szyfrogramu, aby odzwierciedlić zmianę modułu
+        # Create new context with updated parameters
         new_context = CKKSContext(self.context.N, self.context.q_sizes, self.context.delta_bits)
         new_context.primes = self.context.primes
         new_context.q_chain = self.context.q_chain
         new_context.current_modulus_idx = next_mod_idx
         new_context.current_q = Q_next
-        PolyRing.q = new_context.current_q 
+        new_context.keygen = self.context.keygen
+        PolyRing.q = Q_next
 
-        new_effective_delta_after_relinearize = self.delta / P_drop 
-        
-        return Ciphertext(c0_final, c1_final, new_context, new_effective_delta_after_relinearize, d2=None)
+        # Get relinearization key for current level
+        relin_key_for_stage = self.context.keygen.relin_key[current_mod_idx - 1]
+        A_r, B_r = relin_key_for_stage
 
-    @staticmethod
-    def _rescale_poly_by_factor(poly: PolyRing, factor: float) -> PolyRing:
-        """ Skaluje współczynniki wielomianu przez podany współczynnik.
-        Używa float() do konwersji współczynników, aby uniknąć przepełnienia.
-        Współczynnik musi być różny od zera.
+        # Scale down all components by P_drop
+        d2_scaled = Ciphertext._rescale_poly_by_factor(self._d2, P_drop, Q_next)
+        B_r_scaled = Ciphertext._rescale_poly_by_factor(B_r, P_drop, Q_next)
+        A_r_scaled = Ciphertext._rescale_poly_by_factor(A_r, P_drop, Q_next)
+        c0_scaled = Ciphertext._rescale_poly_by_factor(self.c0, P_drop, Q_next)
+        c1_scaled = Ciphertext._rescale_poly_by_factor(self.c1, P_drop, Q_next)
+
+        # Relinearization step with all components at Q_next
+        c0_final = c0_scaled + d2_scaled * B_r_scaled
+        c1_final = c1_scaled + d2_scaled * A_r_scaled
+
+        # The scale is divided by P_drop
+        new_delta = self.delta / P_drop
+
+        return Ciphertext(c0_final, c1_final, new_context, new_delta)
+
+    def rescale(self):
         """
-        if factor == 0:
-            raise ValueError("Współczynnik skalowania nie może być zerem.")
-
-        scaled_coeffs_float = np.array([float(x) for x in poly.vec], dtype=np.float64) # Upewnij się, że to float(x)
-        scaled_coeffs_float = np.round(scaled_coeffs_float / factor) # Wynik to float
-
-        current_q = poly._current_q 
-        # Konwersja na inta przed modulo, aby uniknąć przepełnienia
-        reduced = np.array([(int(x) % current_q + current_q) % current_q for x in scaled_coeffs_float], dtype=object)
-
-        return PolyRing(reduced, current_q)
-
-    def rescale(self, target_delta: float):
+        Performs rescaling and adjusts scale.
+        The scale is divided by the dropped prime.
         """
-        Reskaluje szyfrogram do nowego, pożądanego współczynnika delta.
-        To jest oddzielna operacja od modulus switching w relinearyzacji.
-        """
-        rescale_factor = self.delta / target_delta 
-        
-        c0_rescaled = Ciphertext._rescale_poly_by_factor(self.c0, rescale_factor)
-        c1_rescaled = Ciphertext._rescale_poly_by_factor(self.c1, rescale_factor)
-        
-        d2_rescaled = None
-        if self._d2 is not None:
-             d2_rescaled = Ciphertext._rescale_poly_by_factor(self._d2, rescale_factor)
+        current_mod_idx = self.context.current_modulus_idx
+        if current_mod_idx == 0:
+            raise ValueError("Cannot perform rescaling: reached last modulus in chain.")
 
-        new_ciphertext_obj = Ciphertext(c0_rescaled, c1_rescaled, self.context, target_delta, d2=d2_rescaled)
-        return new_ciphertext_obj
+        next_mod_idx = current_mod_idx - 1
+        Q_next = self.context.q_chain[next_mod_idx]
+        P_drop = self.context.primes[current_mod_idx]
+
+        # Create new context with updated parameters
+        new_context = CKKSContext(self.context.N, self.context.q_sizes, self.context.delta_bits)
+        new_context.primes = self.context.primes
+        new_context.q_chain = self.context.q_chain
+        new_context.current_modulus_idx = next_mod_idx
+        new_context.current_q = Q_next
+        new_context.keygen = self.context.keygen
+        PolyRing.q = Q_next
+
+        # Scale down ciphertext components
+        c0_rescaled = Ciphertext._rescale_poly_by_factor(self.c0, P_drop, Q_next)
+        c1_rescaled = Ciphertext._rescale_poly_by_factor(self.c1, P_drop, Q_next)
+
+        # The scale is divided by P_drop
+        new_delta = self.delta / P_drop
+
+        return Ciphertext(c0_rescaled, c1_rescaled, new_context, new_delta)
 
     def key_switch(self, key_switch_key):
         """
         Wykonuje operację przełączania kluczy szyfrogramu ze starego klucza tajnego na nowy.
-        UWAGA: To jest uproszczona implementacja.
         """
         a_ks, b_ks = key_switch_key
-        c0_new = self.c0 + self.c1 * b_ks
-        c1_new = self.c1 * a_ks
-        return Ciphertext(c0_new, c1_new, self.context, self.delta) 
+        current_q = self.context.current_q
+
+        # Scale down coefficients before key switching to reduce noise
+        scale_factor = 2**4  # Reduced from 2**8 to control noise better
+
+        # Scale down key switching keys
+        a_ks_scaled = Ciphertext._rescale_poly_by_factor(a_ks, scale_factor, current_q)
+        b_ks_scaled = Ciphertext._rescale_poly_by_factor(b_ks, scale_factor, current_q)
+
+        # Scale down ciphertext
+        c0_scaled = Ciphertext._rescale_poly_by_factor(self.c0, scale_factor, current_q)
+        c1_scaled = Ciphertext._rescale_poly_by_factor(self.c1, scale_factor, current_q)
+
+        # Key switching with scaled components
+        c0_new = c0_scaled + c1_scaled * b_ks_scaled
+        c1_new = c1_scaled * a_ks_scaled
+
+        # Scale back up
+        c0_final = c0_new * scale_factor
+        c1_final = c1_new * scale_factor
+
+        return Ciphertext(c0_final, c1_final, self.context, self.delta)
 
     @staticmethod
     def encrypt(m: PolyRing, public_key, context: CKKSContext):
         """
         Szyfruje zaszyfrowaną wiadomość (w postaci wielomianu) przy użyciu klucza publicznego.
         """
-        N_poly = context.N 
-        current_q = context.current_q 
-        
-        a, b = public_key 
-        
+        N_poly = context.N
+        current_q = context.current_q
+
+        a, b = public_key
+
         u = _small_random_poly(N_poly, current_q=current_q)
         e1 = _noise_poly(N_poly, current_q=current_q)
         e2 = _noise_poly(N_poly, current_q=current_q)
-        
+
         c0 = b * u + e1 + m
         c1 = a * u + e2
-        
-        return Ciphertext(c0, c1, context, context.global_delta, d2=None)
+
+        return Ciphertext(c0, c1, context, context.global_delta)
 
     @staticmethod
-    def decrypt(ciphertext, keygen):
+    def decrypt_static(ciphertext, keygen):
+        # Dopasuj secret_key do q ciphertext.c1
+        if ciphertext.c1._current_q != keygen.secret_key._current_q:
+            secret_key_scaled = ciphertext.rescale_secret_key(keygen.secret_key, ciphertext.c1._current_q)
+        else:
+            secret_key_scaled = keygen.secret_key
+
+        # Dekodowanie: c0 + c1 * secret_key_scaled
+        decrypted_poly = ciphertext.c0 + ciphertext.c1 * secret_key_scaled
+        return decrypted_poly
+
+    @staticmethod
+    def rescale_secret_key(secret_key: PolyRing, target_q: int) -> PolyRing:
         """
-        Deszyfruje szyfrogram przy użyciu klucza tajnego.
-        Zwraca wielomian, który jest przybliżeniem oryginalnej wiadomości.
+        Skalowanie secret_key z jego aktualnego q do target_q.
+        Przyjmujemy, że target_q < secret_key._current_q (czyli q się zmniejsza w łańcuchu).
         """
-        return ciphertext.c0 + ciphertext.c1 * keygen.secret_key
+        current_q = secret_key._current_q
+        if target_q == current_q:
+            return secret_key  # nic nie zmieniamy
+
+        factor = current_q / target_q
+        if factor <= 0:
+            raise ValueError("Niepoprawny współczynnik skalowania")
+
+        # Zamieniamy współczynniki na float i dzielimy przez factor
+        scaled_coeffs_float = np.array([float(x) for x in secret_key.vec], dtype=np.float64)
+        scaled_coeffs_float = np.round(scaled_coeffs_float / factor)
+
+        # Modular reduction w nowym q
+        reduced = np.array([(int(x) % target_q + target_q) % target_q for x in scaled_coeffs_float], dtype=object)
+
+        return PolyRing(reduced, target_q)
+
+    @staticmethod
+    def _rescale_poly_by_factor(poly: PolyRing, factor: int, new_q: int) -> PolyRing:
+        """Helper method to rescale polynomial coefficients."""
+        # Convert to centered representation
+        coeffs = np.array([float(x) for x in poly.vec], dtype=np.float64)
+        coeffs = np.where(coeffs > poly._current_q/2, coeffs - poly._current_q, coeffs)
+        
+        # Scale down by factor
+        coeffs_scaled = coeffs / factor
+        
+        # Round to nearest integer
+        coeffs_rounded = np.round(coeffs_scaled)
+        
+        # Center coefficients around zero
+        coeffs_centered = np.where(coeffs_rounded > new_q/2, coeffs_rounded - new_q, coeffs_rounded)
+        
+        # Convert to integers modulo new_q
+        coeffs_int = np.array([(int(x) % new_q + new_q) % new_q for x in coeffs_centered], dtype=object)
+        
+        return PolyRing(coeffs_int, new_q)
+
 
 # --- Klasa KeyGenerator ---
 

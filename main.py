@@ -3,7 +3,7 @@ import numpy as np
 from PolyRing import PolyRing
 from ckks import CKKSContext, Ciphertext, encode, decode
 
-print("Rozpynam testy dla CKKS.")
+print("Rozpoczynam testy dla CKKS.")
 print("Testy sprawdzają:")
 print("- Poprawność operacji na wielomianach (PolyRing).")
 print("- Kodowanie i dekodowanie wektorów zespolonych.")
@@ -14,9 +14,8 @@ print("---")
 
 class TestCKKS(unittest.TestCase): 
     def setUp(self):
-        self.N_test = 1024 
-        PolyRing.N = self.N_test 
-        PolyRing.f = np.array([1] + [0]*(self.N_test-1) + [1], dtype=object) # Upewnij się, że f jest zaktualizowane
+        self.N_test = 1024
+        PolyRing.set_ring_degree(self.N_test)
 
         self.q_sizes_test = [60, 40, 40, 60] 
         self.delta_bits_test = 40 
@@ -31,9 +30,9 @@ class TestCKKS(unittest.TestCase):
 
 
     def test_poly_ring_operations(self):
+        #to jest ok
         original_poly_N = PolyRing.N
-        PolyRing.N = 8 # Ustawiamy tymczasowo na 8 dla tego testu
-        PolyRing.f = np.array([1] + [0]*(PolyRing.N-1) + [1], dtype=object) # Zaktualizuj f
+        PolyRing.set_ring_degree(8)  # Ustawiamy tymczasowo na 8 dla tego testu
         
         q = self.context.current_q 
         
@@ -70,14 +69,13 @@ class TestCKKS(unittest.TestCase):
         expected_x9 = PolyRing(np.array([0, (q - 1), 0, 0, 0, 0, 0, 0], dtype=object), q)
         np.testing.assert_array_equal(result_x9.vec, expected_x9.vec, err_msg="Multiplication with x^N+k reduction failed")
 
-        PolyRing.N = original_poly_N # Przywróć N
-        PolyRing.f = np.array([1] + [0]*(PolyRing.N-1) + [1], dtype=object) # Zaktualizuj f
+        PolyRing.set_ring_degree(original_poly_N) # Przywróć N
 
 
     def test_complex_vector(self):
+        #to jest ok
         original_poly_N = PolyRing.N
-        PolyRing.N = 8 
-        PolyRing.f = np.array([1] + [0]*(PolyRing.N-1) + [1], dtype=object) # Zaktualizuj f
+        PolyRing.set_ring_degree(8)
         
         test_context = CKKSContext(8, [30], 20) 
         
@@ -87,8 +85,7 @@ class TestCKKS(unittest.TestCase):
         decoded = decode(poly, test_context.global_delta)
         np.testing.assert_allclose(decoded, test_z, atol=1e-4, err_msg="Encode/Decode failed") 
 
-        PolyRing.N = original_poly_N
-        PolyRing.f = np.array([1] + [0]*(PolyRing.N-1) + [1], dtype=object) # Zaktualizuj f
+        PolyRing.set_ring_degree(original_poly_N)
 
 
     def test_homomorphic_properties(self):
@@ -101,23 +98,23 @@ class TestCKKS(unittest.TestCase):
         m1 = encode(z1, self.context.global_delta, self.context.current_q)
         m2 = encode(z2, self.context.global_delta, self.context.current_q)
         
-        ctxt1 = Ciphertext.encrypt(m1, self.keygen.public_key, self.context)
-        ctxt2 = Ciphertext.encrypt(m2, self.keygen.public_key, self.context)
+        ctxt1 = Ciphertext.encrypt_static(m1, self.keygen.public_key, self.context)
+        ctxt2 = Ciphertext.encrypt_static(m2, self.keygen.public_key, self.context)
 
         ctxt_add = ctxt1 + ctxt2
-        decrypted_add_poly = Ciphertext.decrypt(ctxt_add, self.keygen)
+        decrypted_add_poly = Ciphertext.decrypt_static(ctxt_add, self.keygen)
         decrypted_add = decode(decrypted_add_poly, self.context.global_delta)
         np.testing.assert_allclose(decrypted_add, z1 + z2, atol=1e-2, err_msg="Homomorphic addition failed")
 
         ctxt_mul_raw = ctxt1.multiply(ctxt2) 
         ctxt_mul_relin = ctxt_mul_raw.relinearize() 
-        ctxt_mul_rescaled = ctxt_mul_relin.rescale(self.context.global_delta)
+        ctxt_mul_rescaled = ctxt_mul_relin.rescale()
         
-        decrypted_mul_poly = Ciphertext.decrypt(ctxt_mul_rescaled, self.keygen)
-        # ZWIĘKSZONO ATOL DLA MNOŻENIA Z UWAGI NA SZUM (1e1 = 10.0)
+        decrypted_mul_poly = Ciphertext.decrypt_static(ctxt_mul_rescaled, self.keygen)
+
         np.testing.assert_allclose(decode(decrypted_mul_poly, ctxt_mul_rescaled.delta), z1 * z2, atol=1e1, err_msg="Homomorphic multiplication failed")
 
-
+    
     def test_rescale_after_scalar_multiplication(self):
         # WAŻNE: Dostosuj z do N_test // 2 = 512 elementów
         num_slots = self.N_test // 2
@@ -125,11 +122,11 @@ class TestCKKS(unittest.TestCase):
         factor = 5 
 
         m = encode(z, self.context.global_delta, self.context.current_q)
-        ctxt = Ciphertext.encrypt(m, self.keygen.public_key, self.context)
+        ctxt = Ciphertext.encrypt_static(m, self.keygen.public_key, self.context)
 
         ctxt_scaled = ctxt * factor 
         
-        decrypted = decode(Ciphertext.decrypt(ctxt_scaled, self.keygen), self.context.global_delta)
+        decrypted = decode(Ciphertext.decrypt_static(ctxt_scaled, self.keygen), self.context.global_delta)
         
         np.testing.assert_allclose(decrypted, z * factor, atol=1e-3, err_msg="Scalar multiplication failed without explicit rescale")
 
@@ -147,24 +144,22 @@ class TestCKKS(unittest.TestCase):
 
         m = encode(z, context1.global_delta, context1.current_q)
 
-        ctxt = Ciphertext.encrypt(m, keygen1.public_key, context1)
+        ctxt = Ciphertext.encrypt_static(m, keygen1.public_key, context1)
         
         ks_key = keygen2.generate_key_switch_key(keygen1.secret_key)
 
         ctxt_switched = ctxt.key_switch(ks_key)
         
-        decrypted_poly = Ciphertext.decrypt(ctxt_switched, keygen2)
+        decrypted_poly = Ciphertext.decrypt_static(ctxt_switched, keygen2)
         z_decoded = decode(decrypted_poly, context2.global_delta) 
 
-        # ZWIĘKSZONO ATOL DLA KEY SWITCHING (1e5 = 100 000.0)
-        np.testing.assert_allclose(z_decoded, z, atol=1e8, err_msg="Key switch failed") 
+        np.testing.assert_allclose(z_decoded, z, atol=1e5, err_msg="Key switch failed")
 
 
-class TestPolyRingEncoding(unittest.TestCase): 
+class TestPolyRingEncoding(unittest.TestCase):
     def setUp(self):
         self.N_test = 8 
-        PolyRing.N = self.N_test 
-        PolyRing.f = np.array([1] + [0]*(self.N_test-1) + [1], dtype=object) # Zaktualizuj f
+        PolyRing.set_ring_degree(self.N_test)
         self.q_sizes_test = [30] 
         self.delta_bits_test = 20
 
@@ -175,6 +170,7 @@ class TestPolyRingEncoding(unittest.TestCase):
 
 
     def test_encode_decode_inverse(self):
+        # to jest ok
         poly = encode(self.z, self.context.global_delta, self.context.current_q)
         decoded = decode(poly, self.context.global_delta)
 
