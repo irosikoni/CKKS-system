@@ -2,7 +2,7 @@ import numpy as np
 from PolyRing import PolyRing
 from ckks import CKKSContext, Ciphertext, encode, decode
 
-print("=== CKKS MULTIPLICATION DEPTH TEST (ABSOLUTE ERROR) ===")
+print("=== CKKS MULTIPLICATION DEPTH TEST (RE-ENCRYPTION) ===")
 
 def test_multiplication_depth(context, keygen, max_depth=10):
     """Test how many consecutive multiplications can be performed before decryption fails"""
@@ -32,7 +32,21 @@ def test_multiplication_depth(context, keygen, max_depth=10):
             ctxt = ctxt_raw.relinearize()
         except ValueError as e:
             print(f"Relinearization failed: {e}")
-            return depth - 1
+            print("Re-encrypting to continue...")
+            
+            # Decrypt the current result and re-encrypt it
+            try:
+                decrypted_poly = Ciphertext.decrypt(ctxt_raw, keygen)
+                decrypted = decode(decrypted_poly, ctxt_raw.delta)
+                
+                # Re-encode and re-encrypt
+                m_new = encode(decrypted, context.global_delta, context.current_q)
+                ctxt = Ciphertext.encrypt(m_new, keygen.public_key, context)
+                print(f"Re-encrypted successfully")
+                
+            except Exception as re_encrypt_error:
+                print(f"Re-encryption failed: {re_encrypt_error}")
+                return depth - 1
         
         # Decrypt and decode
         try:
@@ -92,7 +106,7 @@ def test_parameter_combinations():
             context = CKKSContext(N, q_sizes, delta_bits)
             keygen = context.keygen
             
-            mul_depth = test_multiplication_depth(context, keygen, max_depth=6)
+            mul_depth = test_multiplication_depth(context, keygen, max_depth=8)
             results[name] = mul_depth
             
         except Exception as e:
@@ -101,7 +115,7 @@ def test_parameter_combinations():
     
     # Print summary
     print(f"\n{'='*60}")
-    print("MULTIPLICATION DEPTH SUMMARY (ABSOLUTE ERROR)")
+    print("MULTIPLICATION DEPTH SUMMARY (WITH RE-ENCRYPTION)")
     print(f"{'='*60}")
     print(f"{'Parameter Set':<20} {'Depth':<10}")
     print("-" * 60)
@@ -119,7 +133,7 @@ def test_parameter_combinations():
         print(f"\nBest multiplication depth: {best[1]} with {best[0]} parameters")
 
 if __name__ == "__main__":
-    print("CKKS Multiplication Depth Analysis (Absolute Error)")
+    print("CKKS Multiplication Depth Analysis (With Re-encryption)")
     
     # Set random seed for reproducibility
     np.random.seed(42)
@@ -134,7 +148,7 @@ if __name__ == "__main__":
     context = CKKSContext(N, q_sizes, delta_bits)
     keygen = context.keygen
     
-    default_depth = test_multiplication_depth(context, keygen, max_depth=6)
+    default_depth = test_multiplication_depth(context, keygen, max_depth=8)
     print(f"\nDefault parameters multiplication depth: {default_depth}")
     
     # Test different parameter combinations
