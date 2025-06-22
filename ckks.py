@@ -4,14 +4,16 @@ from PolyRing import PolyRing
 
 # --- Globalne funkcje pomocnicze (generowanie szumu) ---
 def _small_random_poly(n, bound=1, current_q=None): # BOUND=1 jest ok dla s
-    if current_q is None: current_q = PolyRing.q 
-    coeffs = np.random.randint(-bound, bound + 1, size=n).tolist()
+    if current_q is None: current_q = PolyRing.q
+    # For debugging, set bound=0 (no noise)
+    coeffs = np.random.randint(0, 1, size=n).tolist()
     return PolyRing(coeffs, current_q)
 
 # ckks.py, funkcja _noise_poly
 def _noise_poly(n, bound=1, current_q=None): # UPEWNIJ SIĘ, ŻE TO JEST bound=1 (lub testowo 0)
-    if current_q is None: current_q = PolyRing.q 
-    coeffs = np.random.randint(-bound, bound + 1, size=n).tolist()
+    if current_q is None: current_q = PolyRing.q
+    # For debugging, set bound=0 (no noise)
+    coeffs = np.zeros(n, dtype=int).tolist()
     return PolyRing(coeffs, current_q)
 
 # --- Kodowanie i Dekodowanie ---
@@ -45,9 +47,12 @@ class CKKSContext:
             29: 2**29 - 3   # Liczba pierwsza
         }
 
-        for bits in q_sizes:
+        for i, bits in enumerate(q_sizes):
             if bits in _known_primes:
                 prime_candidate = _known_primes[bits]
+                # For multiple moduli of the same size, add small offsets
+                if i > 0 and bits in [bits_prev for bits_prev in q_sizes[:i]]:
+                    prime_candidate += 2 * i  # Small offset to make different primes
             else:
                 print(f"Ostrzeżenie: Brak zdefiniowanej liczby pierwszej dla {bits} bitów. Używam losowej (może nie być pierwsza).")
                 prime_candidate = random.getrandbits(bits)
@@ -149,14 +154,19 @@ class Ciphertext:
         if factor == 0:
             raise ValueError("Współczynnik skalowania nie może być zerem.")
 
-        scaled_coeffs_float = np.array([float(x) for x in poly.vec], dtype=np.float64) # Upewnij się, że to float(x)
-        scaled_coeffs_float = np.round(scaled_coeffs_float / factor) # Wynik to float
+        # First reduce modulo the current modulus to ensure coefficients are in the correct range
+        current_q = poly._current_q
+        reduced_coeffs = np.array([(int(x) % current_q + current_q) % current_q for x in poly.vec], dtype=object)
+        
+        # Then scale by the factor
+        scaled_coeffs_float = np.array([float(x) for x in reduced_coeffs], dtype=np.float64)
+        scaled_coeffs_float = np.round(scaled_coeffs_float / factor)
 
-        current_q = poly._current_q 
-        # Konwersja na inta przed modulo, aby uniknąć przepełnienia
-        reduced = np.array([(int(x) % current_q + current_q) % current_q for x in scaled_coeffs_float], dtype=object)
+        # Convert back to integers and reduce modulo the new modulus
+        new_q = current_q // int(factor)  # The new modulus after dropping P_drop
+        final_coeffs = np.array([(int(x) % new_q + new_q) % new_q for x in scaled_coeffs_float], dtype=object)
 
-        return PolyRing(reduced, current_q)
+        return PolyRing(final_coeffs, new_q)
 
     def rescale(self, target_delta: float):
         """
@@ -210,7 +220,20 @@ class Ciphertext:
         Deszyfruje szyfrogram przy użyciu klucza tajnego.
         Zwraca wielomian, który jest przybliżeniem oryginalnej wiadomości.
         """
-        return ciphertext.c0 + ciphertext.c1 * keygen.secret_key
+        # Update the global modulus to match the ciphertext's modulus
+        original_q = PolyRing.q
+        PolyRing.q = ciphertext.c0._current_q
+        
+        # Create a temporary secret key with the correct modulus
+        temp_secret_key = PolyRing(keygen.secret_key.vec, ciphertext.c0._current_q)
+        
+        # Perform decryption
+        result = ciphertext.c0 + ciphertext.c1 * temp_secret_key
+        
+        # Restore the original global modulus
+        PolyRing.q = original_q
+        
+        return result
 
 # --- Klasa KeyGenerator ---
 
